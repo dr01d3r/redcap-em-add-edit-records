@@ -64,6 +64,14 @@ $recordCount = null;
  * Build the Form/Field Metadata
  * This is necessary for knowing where to find record
  * values (i.e. repeating/non-repeating forms)
+ *
+ * TODO achieve arms context (and repeating events)
+ *   https://datatables.net/examples/basic_init/complex_header.html
+ *   $Proj->longitudinal
+ *   $Proj->multiple_arms
+ *   $Proj->eventInfo[EVENT_ID]
+ *   $Proj->eventsForms[EVENT_ID] forms
+ *   $Proj->events[ARM_NUM][events][EVENT_ID][descrip]
  */
 foreach ($Proj->forms as $form_name => $form_data) {
     $metadata["forms"][$form_name] = [
@@ -94,16 +102,19 @@ if (!empty(\REDCap::getUserRights(USERID)[USERID]["group_id"])) {
 }
 
 foreach ($module->getSubSettings("search_fields") as $search_field) {
+    if (empty($search_field["search_event_id"])) continue;
     if (empty($search_field["search_field_name"])) continue;
 
     if ($Proj->isFormStatus($search_field["search_field_name"])) {
         $config["search_fields"][$search_field["search_field_name"]] = [
             "wildcard" => false,
+            "event_id" => $search_field["search_event_id"],
             "value" => $Proj->forms[$Proj->metadata[$search_field["search_field_name"]]["form_name"]]["menu"] . " Status",
             "dictionary_values" => $metadata["form_statuses"]
         ];
     } else {
         $config["search_fields"][$search_field["search_field_name"]] = [
+            "event_id" => $search_field["search_event_id"],
             "value" => $module->getDictionaryLabelFor($search_field["search_field_name"])
         ];
         // override wildcard config in certain cases; otherwise, take what the user specified
@@ -143,10 +154,12 @@ foreach ($module->getSubSettings("display_fields") as $display_field) {
     if ($Proj->isFormStatus($display_field["display_field_name"])) {
         $config["display_fields"][$display_field["display_field_name"]] = [
             "is_form_status" => true,
+            "event_id" => $display_field["display_event_id"],
             "label" => $Proj->forms[$Proj->metadata[$display_field["display_field_name"]]["form_name"]]["menu"] . " Status"
         ];
     } else {
         $config["display_fields"][$display_field["display_field_name"]] = [
+            "event_id" => $display_field["display_event_id"],
             "label" => $module->getDictionaryLabelFor($display_field["display_field_name"])
         ];
     }
@@ -314,7 +327,8 @@ foreach ($records as $record_id => $record) { // Record
  * Push all the results to Smarty templates for rendering
  */
 
-if (false) { // TODO this will be replaced with an 'enable debugging' setting
+if (true) { // TODO this will be replaced with an 'enable debugging' setting
+    $debug["settings"] = $module->getSubSettings("search_fields");
     $debug["config"] = $config;
     $debug["metadata"] = $metadata;
     if ((isset($debug) && !empty($debug))) {
