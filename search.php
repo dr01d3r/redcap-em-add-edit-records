@@ -12,6 +12,8 @@ $config = [
     "instance_search" => $module->getProjectSetting("instance_search"),
     "show_instance_badge" => $module->getProjectSetting("show_instance_badge"),
     "auto_numbering" => $Proj->project["auto_inc_set"] === "1",
+    "longitudinal" => $Proj->longitudinal,
+    "multiple_arms" => $Proj->multiple_arms,
     "new_record_label" => $Proj->table_pk_label,
     "new_record_text" => $lang['data_entry_46'],
     "redcap_images_path" => APP_PATH_IMAGES,
@@ -69,15 +71,12 @@ $recordCount = null;
  *   https://datatables.net/examples/basic_init/complex_header.html
  *   $Proj->longitudinal
  *   $Proj->multiple_arms
- *   $Proj->eventInfo[EVENT_ID]
- *   $Proj->eventsForms[EVENT_ID] forms
- *   $Proj->events[ARM_NUM][events][EVENT_ID][descrip]
+ *   $Proj->eventInfo   - events info including arm_num and other arm info
+ *   $Proj->eventsForms - events and their forms
+ *   $Proj->events      - arms and their events
+ *
  */
 foreach ($Proj->forms as $form_name => $form_data) {
-    $metadata["forms"][$form_name] = [
-        "event_id" => null,
-        "repeating" => false
-    ];
     foreach ($form_data["fields"]  as $field_name => $field_label) {
         $metadata["fields"][$field_name] = [
             "form" => $form_name
@@ -86,13 +85,16 @@ foreach ($Proj->forms as $form_name => $form_data) {
 }
 foreach ($Proj->eventsForms as $event_id => $event_forms) {
     foreach ($event_forms as $form_index => $form_name) {
-        $metadata["forms"][$form_name]["event_id"] = $event_id;
+        $metadata["forms"][$form_name][$event_id] = array_merge(
+            [ "repeating" => false ],
+            $Proj->eventInfo[$event_id]
+        );
     }
 }
 if ($config["has_repeating_forms"]) {
     foreach ($Proj->getRepeatingFormsEvents() as $event_id => $event_forms) {
         foreach ($event_forms as $form_name => $value) {
-            $metadata["forms"][$form_name]["repeating"] = true;
+            $metadata["forms"][$form_name][$event_id]["repeating"] = true;
         }
     }
 }
@@ -192,6 +194,7 @@ if (isset($_POST["search-field"]) && isset($_POST["search-value"])) {
         if ($config["has_repeating_forms"]) {
             $search_field_key = key($fieldValues);
             // TODO this is set to only look at the first entry in the array, since the module doesn't yet support multiple search fields
+            // TODO this is broken now - event needs to be added after form name
             if ($metadata["forms"][$metadata["fields"][$search_field_key]["form"]]["repeating"] === true) {
                 $config["warnings"][] = "<b>" . $config["search_fields"][$search_field_key]["value"] . "</b> is on a repeating instrument, and the config setting <b>Which instances to search through</b> has not been set.  Using a default value of <b>Latest</b>.";
             }
@@ -221,6 +224,7 @@ if (empty($config["display_fields"])) {
  */
 foreach ($records as $record_id => $record) { // Record
 
+    // TODO this will change if the project has multiple arms
     $dashboard_url = APP_PATH_WEBROOT . "DataEntry/record_home.php?" . http_build_query([
             "pid" => $module->getPid(),
             "id" => $record_id
@@ -239,7 +243,15 @@ foreach ($records as $record_id => $record) { // Record
 
         // prep some form info
         $field_form_name = $metadata["fields"][$field_name]["form"];
-        $field_form_event_id = $metadata["forms"][$field_form_name]["event_id"];
+        $field_form_event_id = null;
+
+
+        foreach ($metadata["forms"][$field_form_name] as $event_id => $event_info) {
+            if (isset($record[$event_id][$field_name]) && $record[$event_id][$field_name] !== "") {
+                // TODO this needs to be an array; otherwise, it'll just pick up the value from the last event/arm
+                $field_form_event_id = $event_id;
+            }
+        }
 
         // initialize some helper variables/arrays
         $field_type = $Proj->metadata[$field_name]["element_type"];
@@ -314,6 +326,7 @@ foreach ($records as $record_id => $record) { // Record
                 $field_value = str_replace($match_value, "<span class='orca-search-content'>{$match_value}</span>", $field_value);
             } else {
                 // TODO some way to indicate to the user that the matching content is not on the latest instance of this value
+                // TODO we only get here if it is unstructured, wildcarded, and not found...this is not a catch all for the above statment
             }
         }
 
@@ -328,9 +341,10 @@ foreach ($records as $record_id => $record) { // Record
  */
 
 if (true) { // TODO this will be replaced with an 'enable debugging' setting
-    $debug["settings"] = $module->getSubSettings("search_fields");
     $debug["config"] = $config;
-    $debug["metadata"] = $metadata;
+//    $debug["metadata"] = $metadata;
+    $debug["records"] = $records;
+    $debug["results"] = $results;
     if ((isset($debug) && !empty($debug))) {
         $module->setTemplateVariable("debug", print_r($debug, true));
     }

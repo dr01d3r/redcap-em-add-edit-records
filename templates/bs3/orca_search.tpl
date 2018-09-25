@@ -134,13 +134,10 @@
             <table id="orca_search_table" class="table table-bordered table-condensed table-hover">
                 <thead>
                 <tr>
-                    <th class="header" colspan="{count($config["display_fields"])}">Event 1 Arm 1</th>
-                    <th class="header" rowspan="2">Record Home</th>
-                </tr>
-                <tr>
                     {foreach from=$config["display_fields"] key=col_name item=col_value}
                         <th class="header">{$col_value["label"]}</th>
                     {/foreach}
+                    <th class="header">Record Home</th>
                 </tr>
                 </thead>
                 <tbody>
