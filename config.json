@@ -103,13 +103,6 @@
       "repeatable": true,
       "sub_settings": [
         {
-          "key": "search_event_id",
-          "name": "Event name",
-          "required": true,
-          "type": "event-list",
-          "repeatable": false
-        },
-        {
           "key": "search_field_name",
           "name": "Searchable Field Name",
           "required": true,
@@ -132,13 +125,6 @@
       "type": "sub_settings",
       "repeatable": true,
       "sub_settings": [
-        {
-          "key": "display_event_id",
-          "name": "Event name",
-          "required": true,
-          "type": "event-list",
-          "repeatable": false
-        },
         {
           "key": "display_field_name",
           "name": "Field To Display in the Results Table",
