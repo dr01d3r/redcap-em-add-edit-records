@@ -161,13 +161,29 @@
                         </td>
                     {/foreach}
                     <td>
-                        <a href="{$record["dashboard_url"]}" class="jqbuttonmed ui-button ui-widget ui-state-default ui-corner-all ui-button-text-only" role="button">
-                            <span class="ui-button-text">
-                                <span class="ui-button-text">
-                                    <i class="fas fa-edit"></i>&nbsp;Open
-                                </span>
-                            </span>
-                        </a>
+                        {if count($record["links"]) > 1}
+                            <h1>FIX ME FOR BS4</h1>
+                            <div class="btn-group">
+                                <button type="button" class="btn btn-defaultrc btn-sm">
+                                    <i class="fa fa-home" aria-hidden="true"></i>&nbsp;Arm
+                                </button>
+                                <button type="button" class="btn btn-defaultrc btn-sm dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                                    <span class="caret"></span>
+                                    <span class="sr-only">Dashboard Button Select</span>
+                                </button>
+                                <ul class="dropdown-menu dropdown-menu-right">
+                                    {foreach from=$record["links"] key=label item=url}
+                                        <li><a href="{$url}">{$label}</a></li>
+                                    {/foreach}
+                                </ul>
+                            </div>
+                        {else}
+                            {foreach from=$record["links"] key=label item=url}
+                                <a href="{$url}" class="btn btn-defaultrc btn-sm" role="button">
+                                    <i class="fa fa-home" aria-hidden="true"></i>&nbsp;{$label}
+                                </a>
+                            {/foreach}
+                        {/if}
                     </td>
                 </tr>
             {/foreach}

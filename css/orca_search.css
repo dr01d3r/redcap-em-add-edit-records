@@ -30,6 +30,10 @@
     white-space: nowrap;
 }
 
+#orca_search_table .btn-group {
+    display: flex !important;
+}
+
 .orca-search-content {
     font-weight: bold;
     color: blue;
@@ -55,7 +59,7 @@
     border-color: #d6e9c6 !important;
 }
 
-.dataTables_wrapper ul {
+.table tbody ul:not(.dropdown-menu) {
     -webkit-padding-start: 20px;
     margin-bottom: 0px;
 }

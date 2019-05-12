@@ -4,37 +4,56 @@ namespace ORCA\OrcaSearch;
 
 trait REDCapUtils {
 
-    private $_pid = 0;
     private $_dataDictionary = [];
     private $timers = [];
+
+    // TODO REDCap date validation type mapping
 
     private static $_REDCapConn;
 
     protected static function _getREDCapConn() {
-        if(empty(self::$_REDCapConn)){
+        if (empty(self::$_REDCapConn)) {
             global $conn;
             self::$_REDCapConn = $conn;
         }
         return self::$_REDCapConn;
     }
 
-    public function getPid() {
-        if(empty($this->_pid) && array_key_exists("pid", $_GET)){
-            $this->_pid = (int)$_GET["pid"];
+
+    /**
+     * Pulled from AbstractExternalModule
+     * For broad REDCap version compatibility
+     * @return |null
+     */
+    public function getPID() {
+        $pid = @$_GET['pid'];
+
+        // Require only digits to prevent sql injection.
+        if (ctype_digit($pid)) {
+            return $pid;
+        } else {
+            return null;
         }
-        return $this->_pid;
     }
 
     public function getDataDictionary($format = 'array') {
-        if(!array_key_exists($format, $this->_dataDictionary)){
+        if (!array_key_exists($format, $this->_dataDictionary)) {
             $this->_dataDictionary[$format] = \REDCap::getDataDictionary($format);
         }
         $dictionaryToReturn = $this->_dataDictionary[$format];
         return $dictionaryToReturn;
     }
 
+    public function getFieldValidationTypeFor($field_name) {
+        $result = $this->getDataDictionary()[$field_name]['text_validation_type_or_show_slider_number'];
+        if (empty($result)) {
+            return null;
+        }
+        return $result;
+    }
+
     public function getDictionaryLabelFor($key) {
-        $label = $this->getDataDictionary("array")[$key]['field_label'];
+        $label = $this->getDataDictionary()[$key]['field_label'];
         if (empty($label)) {
             return $key;
         }
@@ -46,9 +65,31 @@ trait REDCapUtils {
         return $this->flatten_type_values($this->getDataDictionary()[$key]['select_choices_or_calculations']);
     }
 
+    /**
+     * Returns a formatted date string if the provided date is valid, otherwise returns FALSE
+     * @param mixed $date
+     * @param string $format
+     * @return false|string
+     */
+    public function getFormattedDateString($date, $format) {
+        if (empty($format)) {
+            return $date;
+        } else if ($date instanceof \DateTime) {
+            return date_format($date, $format);
+        } else {
+            if (!empty($date)) {
+                $timestamp = strtotime($date);
+                if ($timestamp !== false) {
+                    return date($format, $timestamp);
+                }
+            }
+        }
+        return false;
+    }
+
     public function comma_delim_to_key_value_array($value) {
         $arr = explode(', ', trim($value));
-        $sliced = array_slice($arr, 1, count($arr)-1, true);
+        $sliced = array_slice($arr, 1, count($arr) - 1, true);
         return array($arr[0] => implode(', ', $sliced));
     }
 
@@ -66,136 +107,161 @@ trait REDCapUtils {
 
     public function flatten_type_values($value) {
         $split = explode('|', $value);
-        $mapped = array_map(function ($value) { return $this->comma_delim_to_key_value_array($value); }, $split);
+        $mapped = array_map(function ($value) {
+            return $this->comma_delim_to_key_value_array($value);
+        }, $split);
         $result = $this->array_flatten($mapped);
         return $result;
     }
 
-	/**
-	 * NOTE: Passing in at least one fieldValue or orderBy will significantly improve performance
-	 *
-	 * NOTE: Avoiding the use of the % wildcard will significantly improve performance
-	 *
-	 * NOTE: An empty (falsey) value for a field ($fieldValues) will always match
-	 * NOTE: Boolean true for a field value will require only that the field exists for the record
-	 *
-	 * "record_ids" will contain the record_ids for the given parameters
-	 * "total_records" will contain how many records matched the given criteria, regardless of how many are returned
-	 * "all_records" will contain the number of records in the current project
-	 *
-	 * @param  array  $fieldValues   - An array of field_name to values; if they match (see $fieldValuesMatchType), the record is returned
-	 * @param  string $fieldValuesMatchType - How the fieldValues need to match a given record to make it a valid record to return
-	 * @param  string $instanceToMatch - "LATEST" to check fields against just the latest instance, or "ALL" to check against all instances
-	 *
-	 * @return array - An array of record ids, or [{associated information elements}, "records_ids" => [1,2,3]] if requested
-	 *
-	 * @throws \Exception
-	 */
-	public function getProjectRecordIds($fieldValues = null, $fieldValuesMatchType = "ALL", $instanceToMatch = "LATEST") {
-		$validFieldValueMatchTypes = ["ALL", "ANY"];
-		$validInstanceToMatchTypes = ["LATEST", "ALL"];
-		if(!in_array($fieldValuesMatchType, $validFieldValueMatchTypes)){
-			throw new \Exception(sprintf("PARAMETER_OF_TYPE_INVALID", "\$fieldValuesMatchType", $fieldValuesMatchType));
-		}
-		if(!in_array($instanceToMatch, $validInstanceToMatchTypes)){
-			throw new \Exception(sprintf("PARAMETER_OF_TYPE_INVALID", "\$instanceToMatchTypes", $instanceToMatch));
-		}
+    /**
+     * NOTE: Passing in at least one fieldValue or orderBy will significantly improve performance
+     *
+     * NOTE: Avoiding the use of the % wildcard will significantly improve performance
+     *
+     * NOTE: Boolean true for a field value will require only that the field exists for the record
+     *
+     * "record_ids" will contain the record_ids for the given parameters
+     *
+     * @param  array $fieldValues - An array of field_name to values; if they match (see $fieldValuesMatchType), the record is returned
+     * @param  string $instanceToMatch - "LATEST" to check fields against just the latest instance, or "ALL" to check against all instances
+     *
+     * @return array - An array of record ids, or [{associated information elements}, "records_ids" => [1,2,3]] if requested
+     *
+     * @throws \Exception
+     */
+    public function getProjectRecordIds($fieldValues = null, $instanceToMatch = "LATEST") {
+        $validInstanceToMatchTypes = ["LATEST", "ALL"];
 
-		$fieldValuesToStrPosOrEquals = [];
+        if (!in_array($instanceToMatch, $validInstanceToMatchTypes)) {
+            throw new \Exception(sprintf("PARAMETER_OF_TYPE_INVALID", "\$instanceToMatchTypes", $instanceToMatch));
+        }
+
+        $fieldValuesToStrPosOrEquals = [];
         $allFieldNamesInString = "";
-        $allFieldNamesNeeded = [];
 
-		foreach($fieldValues as $field => $value){
-			$fieldValuesToStrPosOrEquals[$field] = "equals";
-			if(strpos($value, "%") !== false){
-				$fieldValuesToStrPosOrEquals[$field] = "strpos";
-				$fieldValues[$field] = $this->_getREDCapConn()->real_escape_string(rtrim($value, "%"));
-			}
-		}
+        foreach ($fieldValues as $field => $value) {
+            $fieldValuesToStrPosOrEquals[$field] = "equals";
+            if (strpos($value, "%") !== false) {
+                $fieldValuesToStrPosOrEquals[$field] = "strpos";
+                $fieldValues[$field] = $this->_getREDCapConn()->real_escape_string(rtrim($value, "%"));
+            }
+        }
 
-		if(!empty($fieldValues)){
-			$allFieldNamesNeeded = array_merge($allFieldNamesNeeded, array_keys($fieldValues));
-            $allFieldNamesInString = " AND field_name IN('" . implode("', '", $allFieldNamesNeeded) . "')";
-		}
+        if (!empty($fieldValues)) {
+            $allFieldNamesInString = " AND field_name IN ('" . implode("', '", array_keys($fieldValues)) . "')";
+        }
 
-		$primarySql = "SELECT record, field_name, value, instance FROM redcap_data WHERE project_id = " . $this->getPid() . $allFieldNamesInString;
-		$primaryResult = $this->_getREDCapConn()->query($primarySql);
-		$allRecords = [];
-		while($row = $primaryResult->fetch_assoc()){
-			$instance = 1;
-			if(!is_null($row["instance"])){
-				$instance = $row["instance"];
-			}
-			if (array_key_exists($row["field_name"], $allRecords[$row["record"]]["instances"][$instance])) {
-                $allRecords[$row["record"]]["instances"][$instance][$row["field_name"]] = $allRecords[$row["record"]]["instances"][$instance][$row["field_name"]] . "|" . $row["value"];
+        $primarySql = "SELECT record, field_name, value, instance FROM redcap_data WHERE project_id = " . $this->getPID() . $allFieldNamesInString;
+        $primaryResult = $this->_getREDCapConn()->query($primarySql);
+        $allRecords = [];
+        while ($row = $primaryResult->fetch_assoc()) {
+            $instance = 1;
+            if (!is_null($row["instance"])) {
+                $instance = $row["instance"];
+            }
+            $allRecords[$row["record"]]["instances"][$instance][$row["field_name"]] = $row["value"];
+        }
+        $primaryResult->free_result();
+
+        $filteredRecords = [];
+        foreach ($allRecords as $recordId => $record) {
+            if ($instanceToMatch === "LATEST") {
+                krsort($record["instances"]);
+                $latestData = array_shift($record["instances"]);
+                // Get the latest value for each field
+                while ($instance = array_shift($record["instances"])) {
+                    $latestData += $instance;
+                }
+                if ($this->_checkRecordInclusionForGetProjectRecordIds($latestData, $fieldValues, $fieldValuesToStrPosOrEquals)) {
+                    $filteredRecords[$recordId] = true;
+                }
+            } elseif ($instanceToMatch === "ALL") {
+                foreach ($record["instances"] as $instanceId => $instanceInfo) {
+                    if ($this->_checkRecordInclusionForGetProjectRecordIds($instanceInfo, $fieldValues, $fieldValuesToStrPosOrEquals)) {
+                        $filteredRecords[$recordId] = true;
+                    }
+                }
+            }
+        }
+        return array_keys($filteredRecords);
+    }
+
+    private function _checkRecordInclusionForGetProjectRecordIds($recordData, $fieldValues, $fieldValuesToStrPosOrEquals) {
+        $allFieldsMatched  = true;
+        $recordFound = false;
+
+        foreach ($fieldValues as $field => $value) {
+            $missing = $value === '' || $value === null;
+
+            if ($fieldValuesToStrPosOrEquals[$field] === "strpos") {
+                if (!$missing && stripos($recordData[$field], $value) === false) {
+                    $allFieldsMatched  = false;
+                }
             } else {
-                $allRecords[$row["record"]]["instances"][$instance][$row["field_name"]] = $row["value"];
-            }
-		}
-		$primaryResult->free_result();
-
-		$filteredRecords = [];
-		foreach($allRecords as $recordId => $record){
-			if($instanceToMatch === "LATEST"){
-				krsort($record["instances"]);
-				$latestData = array_shift($record["instances"]);
-				// Get the latest value for each field
-				while($instance = array_shift($record["instances"])){
-					$latestData += $instance;
-				}
-				if($this->_checkRecordInclusionForGetProjectRecordIds($latestData, $fieldValues, $fieldValuesMatchType, $fieldValuesToStrPosOrEquals)){
-					$filteredRecords[$recordId] = $latestData;
-				}
-			}elseif($instanceToMatch === "ALL"){
-				foreach($record["instances"] as $instanceId => $instanceInfo){
-					if($this->_checkRecordInclusionForGetProjectRecordIds($instanceInfo, $fieldValues, $fieldValuesMatchType, $fieldValuesToStrPosOrEquals)){
-						$filteredRecords[$recordId] = $instanceInfo;
-					}
-				}
-			}
-		}
-		return array_keys($filteredRecords);
-	}
-
-    private function _checkRecordInclusionForGetProjectRecordIds($recordData, $fieldValues, $fieldValuesMatchType, $fieldValuesToStrPosOrEquals) {
-        $allFieldsMatched = true;
-        $anyFieldsMatched = false;
-        if(is_null($fieldValues)){
-            $anyFieldsMatched = true;
-        }
-        foreach($fieldValues as $field => $value){
-            if($fieldValuesToStrPosOrEquals[$field] === "strpos"){
-                if($fieldValuesMatchType === "ALL"){
-                    if(!empty($value) && !($value === true && array_key_exists($field, $recordData)) && stripos($recordData[$field], $value) === false){
-                        $allFieldsMatched = false;
-                    }
-                }else{
-                    if((empty($value) || ($value === true && array_key_exists($field, $recordData)) || stripos($recordData[$field], $value) === 0)){
-                        $anyFieldsMatched = true;
-                    }
-                }
-            }else{
-                if($fieldValuesMatchType === "ALL"){
-                    if(!empty($value) && !($value === true && array_key_exists($field, $recordData)) && $recordData[$field] !== $value){
-                        $allFieldsMatched = false;
-                        break;
-                    }
-                }else if(empty($value) || ($value === true && array_key_exists($field, $recordData)) || strpos($recordData[$field], $value) === 0){
-                    $anyFieldsMatched = true;
+                if (!$missing && strcasecmp($recordData[$field], $value) !== 0) {
+                    $allFieldsMatched  = false;
+                    break;
                 }
             }
         }
 
-        $foundRecord = false;
-        if(($fieldValuesMatchType === "ALL" && $allFieldsMatched === true) || ($fieldValuesMatchType === "ANY" && $anyFieldsMatched === true)){
-            $foundRecord = true;
+        if ($allFieldsMatched === true) {
+            $recordFound = true;
         }
-        return $foundRecord;
+        return $recordFound;
+    }
+
+
+
+    public function getDateFormatFromREDCapValidationType($field_name) {
+        $php_date_format = false;
+
+        $validationType = $this->getFieldValidationTypeFor($field_name);
+        switch ($validationType)
+        {
+            case 'time':
+                $php_date_format = "H:i";
+                break;
+            case 'date':
+            case 'date_ymd':
+                $php_date_format = "Y-m-d";
+                break;
+            case 'date_mdy':
+                $php_date_format = "m-d-Y";
+                break;
+            case 'date_dmy':
+                $php_date_format = "d-m-Y";
+                break;
+            case 'datetime':
+            case 'datetime_ymd':
+                $php_date_format = "Y-m-d H:i";
+                break;
+            case 'datetime_mdy':
+                $php_date_format = "m-d-Y H:i";
+                break;
+            case 'datetime_dmy':
+                $php_date_format = "d-m-Y H:i";
+                break;
+            case 'datetime_seconds':
+            case 'datetime_seconds_ymd':
+                $php_date_format = "Y-m-d H:i:s";
+                break;
+            case 'datetime_seconds_mdy':
+                $php_date_format = "m-d-Y H:i:s";
+                break;
+            case 'datetime_seconds_dmy':
+                $php_date_format = "d-m-Y H:i:s";
+                break;
+            default:
+                break;
+        }
+        return $php_date_format;
     }
 
     public function preout($content) {
-	    if (is_array($content) || is_object($content)) {
-	        echo "<pre>" . print_r($content, true) . "</pre>";
+        if (is_array($content) || is_object($content)) {
+            echo "<pre>" . print_r($content, true) . "</pre>";
         } else {
             echo "<pre>$content</pre>";
         }
@@ -229,34 +295,5 @@ trait REDCapUtils {
         }
         $calcTime = round($curTime["value"] - $initTime["value"], 4);
         echo "<p><i>Total Processing Time: {$calcTime} seconds</i></p>";
-    }
-
-    public function versionCompare($v1, $v2, $debug = false) {
-        $v1parts = explode(".", $v1);
-        $v2parts = explode(".", $v2);
-
-        if (count($v1parts) != count($v2parts)) {
-            throw new \InvalidArgumentException("$v1 and $v2 are not comparable");
-        }
-
-        for ($i = 0; $i < count($v1parts); $i++) {
-            if ($v1parts[$i] === $v2parts[$i]) continue;
-            if ($v1parts[$i] < $v2parts[$i]) {
-                if ($debug === true)  {
-                    self::preout("$v1 is less than $v2");
-                }
-                return -1;
-            }
-            else {
-                if ($debug === true)  {
-                    self::preout("$v1 is greater than $v2");
-                }
-                return 1;
-            }
-        }
-        if ($debug === true)  {
-            self::preout("$v1 is equal to $v2");
-        }
-        return 0;
     }
 }

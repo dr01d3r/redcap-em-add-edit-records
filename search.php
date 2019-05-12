@@ -19,7 +19,7 @@ $config = [
     "redcap_images_path" => APP_PATH_IMAGES,
     "module_version" => $module->VERSION,
     "new_record_url" => APP_PATH_WEBROOT . "DataEntry/record_home.php?" . http_build_query([
-        "pid" => $module->getPid(),
+        "pid" => $module->getPID(),
         "auto" => "1"
     ]),
     "include_dag" => false,
@@ -85,16 +85,14 @@ foreach ($Proj->forms as $form_name => $form_data) {
 }
 foreach ($Proj->eventsForms as $event_id => $event_forms) {
     foreach ($event_forms as $form_index => $form_name) {
-        $metadata["forms"][$form_name][$event_id] = array_merge(
-            [ "repeating" => false ],
-            $Proj->eventInfo[$event_id]
-        );
-    }
-}
-if ($config["has_repeating_forms"]) {
-    foreach ($Proj->getRepeatingFormsEvents() as $event_id => $event_forms) {
-        foreach ($event_forms as $form_name => $value) {
-            $metadata["forms"][$form_name][$event_id]["repeating"] = true;
+        $metadata["forms"][$form_name][$event_id] = $Proj->eventInfo[$event_id];
+
+        if (array_key_exists($event_id, $Proj->getRepeatingFormsEvents())) {
+            if ($Proj->getRepeatingFormsEvents()[$event_id] === "WHOLE") {
+                $metadata["forms"][$form_name][$event_id]["repeating"] = "event";
+            } else if (array_key_exists($form_name, $Proj->getRepeatingFormsEvents()[$event_id])) {
+                $metadata["forms"][$form_name][$event_id]["repeating"] = "form";
+            }
         }
     }
 }
@@ -104,19 +102,16 @@ if (!empty(\REDCap::getUserRights(USERID)[USERID]["group_id"])) {
 }
 
 foreach ($module->getSubSettings("search_fields") as $search_field) {
-    if (empty($search_field["search_event_id"])) continue;
     if (empty($search_field["search_field_name"])) continue;
 
     if ($Proj->isFormStatus($search_field["search_field_name"])) {
         $config["search_fields"][$search_field["search_field_name"]] = [
             "wildcard" => false,
-            "event_id" => $search_field["search_event_id"],
             "value" => $Proj->forms[$Proj->metadata[$search_field["search_field_name"]]["form_name"]]["menu"] . " Status",
             "dictionary_values" => $metadata["form_statuses"]
         ];
     } else {
         $config["search_fields"][$search_field["search_field_name"]] = [
-            "event_id" => $search_field["search_event_id"],
             "value" => $module->getDictionaryLabelFor($search_field["search_field_name"])
         ];
         // override wildcard config in certain cases; otherwise, take what the user specified
@@ -156,13 +151,13 @@ foreach ($module->getSubSettings("display_fields") as $display_field) {
     if ($Proj->isFormStatus($display_field["display_field_name"])) {
         $config["display_fields"][$display_field["display_field_name"]] = [
             "is_form_status" => true,
-            "event_id" => $display_field["display_event_id"],
+            "date_format" => false,
             "label" => $Proj->forms[$Proj->metadata[$display_field["display_field_name"]]["form_name"]]["menu"] . " Status"
         ];
     } else {
         $config["display_fields"][$display_field["display_field_name"]] = [
-            "event_id" => $display_field["display_event_id"],
-            "label" => $module->getDictionaryLabelFor($display_field["display_field_name"])
+            "date_format" => $module->getDateFormatFromREDCapValidationType($display_field["display_field_name"]),
+            "label" => $module->getDictionaryLabelFor($display_field["display_field_name"]),
         ];
     }
 }
@@ -192,15 +187,24 @@ if (isset($_POST["search-field"]) && isset($_POST["search-value"])) {
     if (empty($config["instance_search"])) {
         $config["instance_search"] = "LATEST";
         if ($config["has_repeating_forms"]) {
-            $search_field_key = key($fieldValues);
             // TODO this is set to only look at the first entry in the array, since the module doesn't yet support multiple search fields
             // TODO this is broken now - event needs to be added after form name
-            if ($metadata["forms"][$metadata["fields"][$search_field_key]["form"]]["repeating"] === true) {
-                $config["warnings"][] = "<b>" . $config["search_fields"][$search_field_key]["value"] . "</b> is on a repeating instrument, and the config setting <b>Which instances to search through</b> has not been set.  Using a default value of <b>Latest</b>.";
-            }
+//            $search_field_key = key($fieldValues);
+//            if ($metadata["forms"][$metadata["fields"][$search_field_key]["form"]]["repeating"] === true) {
+//                $config["warnings"][] = "<b>" . $config["search_fields"][$search_field_key]["value"] . "</b> is on a repeating instrument, and the config setting <b>Which instances to search through</b> has not been set.  Using a default value of <b>Latest</b>.";
+//            }
         }
     }
-    $recordIds = $module->getProjectRecordIds($fieldValues, "ALL", $config["instance_search"]);
+    $debug["log"][] = "running search";
+    $debug["log"][] = $fieldValues;
+
+    $recordIds = [];
+    try {
+        $recordIds = $module->getProjectRecordIds($fieldValues, $config["instance_search"]);
+    } catch (Exception $ex) {
+        \REDCap::logEvent($ex->getMessage(), "", "", null, null, $module->getPID());
+        $config["errors"][] = $ex->getMessage();
+    }
     $recordCount = count($recordIds);
 }
 
@@ -209,7 +213,7 @@ if ($recordCount === 0) {
 } else if ($recordCount != null && !empty($config["result_limit"]) && $recordCount > $config["result_limit"]) {
     $config["errors"][] = "Too many results found ($recordCount).  Please be more specific (limit {$config["result_limit"]}).";
 } else if ($recordCount > 0) {
-    $records = \REDCap::getData($module->getPid(), 'array', $recordIds, array_keys($config["display_fields"]), null, $config["user_dag"], false, $config["include_dag"]);
+    $records = \REDCap::getData($module->getPID(), 'array', $recordIds, array_keys($config["display_fields"]), null, $config["user_dag"], false, $config["include_dag"]);
 }
 
 if (empty($config["search_fields"])) {
@@ -223,59 +227,63 @@ if (empty($config["display_fields"])) {
  * Record Processing
  */
 foreach ($records as $record_id => $record) { // Record
-
-    // TODO this will change if the project has multiple arms
-    $dashboard_url = APP_PATH_WEBROOT . "DataEntry/record_home.php?" . http_build_query([
-            "pid" => $module->getPid(),
-            "id" => $record_id
-        ]);
-
+    // TODO do something for tracking the complete record info for rendering in a modal
     $record_info = [
-        "record_id" => [
-            "value" => $record_id
-        ],
-        "dashboard_url" => $dashboard_url
+        "arms" => [],
+        "links" => [],
+        "display_dataset" => [],
+        "complete_dataset" => []
     ];
-
+    // TODO new implementation of DAGs must be verified
+    $redcap_data_access_group = null;
     foreach ($config["display_fields"] as $field_name => $field_info) {
         // don't handle DAG directly, it will be set in process of the first non-DAG field
         if ($field_name === "redcap_data_access_group") continue;
 
         // prep some form info
         $field_form_name = $metadata["fields"][$field_name]["form"];
-        $field_form_event_id = null;
-
-
-        foreach ($metadata["forms"][$field_form_name] as $event_id => $event_info) {
-            if (isset($record[$event_id][$field_name]) && $record[$event_id][$field_name] !== "") {
-                // TODO this needs to be an array; otherwise, it'll just pick up the value from the last event/arm
-                $field_form_event_id = $event_id;
-            }
-        }
 
         // initialize some helper variables/arrays
         $field_type = $Proj->metadata[$field_name]["element_type"];
         $field_value = null;
-        $form_values = [];
 
-        // set the form_values array with the data we want to look at
-        if ($metadata["forms"][$field_form_name]["repeating"]) {
-            // TODO (ALL vs LATEST) consider finding the latest instance where the search value was found, and display that instead of always the latest
-            $form_values = end($record["repeat_instances"][$field_form_event_id][$field_form_name]);
-            if ($config["show_instance_badge"] === true) {
-                $record_info[$field_name]["badge"] = key($record["repeat_instances"][$field_form_event_id][$field_form_name]);
+        foreach ($metadata["forms"][$field_form_name] as $event_id => $event_info) {
+            // set the form_values array with the data we want to look at
+            switch ($event_info["repeating"]) {
+                case "event": // entire event, go to null key
+                    break;
+                case "form": // individual, go to form key
+                    break;
+                default:  // non-repeating
+                    break;
+
             }
-        } else {
-            $form_values = $record[$field_form_event_id];
+            if ($event_info["repeating"]) {
+                foreach ($record["repeat_instances"][$event_id][$field_form_name] as $instance_key => $instance_info) {
+                    if (isset($instance_info[$field_name])) {
+                        $record_info["arms"][$metadata["forms"][$field_form_name][$event_id]["arm_num"]] = $metadata["forms"][$field_form_name][$event_id]["arm_name"];
+                        $field_value = $instance_info[$field_name];
+                        $redcap_data_access_group = $instance_info["redcap_data_access_group"];
+
+//                        $debug["log"][$record_id][] = "$event_id || $field_form_name ($instance_key) || $field_name || $field_value";
+                    }
+                }
+                if ($config["show_instance_badge"] === true) {
+                    $record_info[$field_name]["badge"] = key($record["repeat_instances"][$event_id][$field_form_name]);
+                }
+            } elseif (isset($record[$event_id][$field_name])) {
+                $record_info["arms"][$metadata["forms"][$field_form_name][$event_id]["arm_num"]] = $metadata["forms"][$field_form_name][$event_id]["arm_name"];
+                $field_value = $record[$event_id][$field_name];
+                $redcap_data_access_group = $record[$event_id]["redcap_data_access_group"];
+
+//                $debug["log"][$record_id][] = "$event_id || $field_form_name || $field_name || $field_value";
+            }
         }
 
         // special handling for dag as well as structured data fields
         if ($config["include_dag"] === true && !isset($record_info["redcap_data_access_group"])) {
-            $record_info["redcap_data_access_group"]["value"] = $config["groups"][$form_values["redcap_data_access_group"]];
+            $record_info["redcap_data_access_group"]["value"] = $config["groups"][$redcap_data_access_group];
         }
-
-        // set the raw value of the field
-        $field_value = $form_values[$field_name];
 
         if ($field_name === $Proj->table_pk) {
             $parts = explode("-", $field_value);
@@ -289,6 +297,11 @@ foreach ($records as $record_id => $record) { // Record
         if ($field_info["is_form_status"] === true) {
             // special value handling for form statuses
             $field_value = $metadata["form_statuses"][$field_value];
+        } else if ($field_info["date_format"] !== false) {
+            // the database value for date works well for sorting
+            // so apply a sort value before further formatting a date string
+            $record_info[$field_name]["__SORT__"] = $field_value;
+            $field_value = $module->getFormattedDateString($field_value, $field_info["date_format"]);
         } else if (!in_array($field_type, $metadata["unstructured_field_types"])) {
             switch ($field_type) {
                 case "select":
@@ -313,6 +326,9 @@ foreach ($records as $record_id => $record) { // Record
             }
         }
 
+        // additional formatting for date display
+
+
         /*
          * Highlighting
          * - selected search field
@@ -332,6 +348,17 @@ foreach ($records as $record_id => $record) { // Record
 
         $record_info[$field_name]["value"] = $field_value;
     }
+
+    // create dashboard links based on the number of arms where data exists
+    foreach ($record_info["arms"] as $arm_num => $arm_name) {
+        $link_label = "Arm " . $arm_num . ": " . $arm_name;
+        $record_info["links"][$link_label] = APP_PATH_WEBROOT . "DataEntry/record_home.php?" . http_build_query([
+            "pid" => $module->getPID(),
+            "id" => $record_id,
+            "arm" => $arm_num
+        ]);
+    }
+
     // add record data to the full dataset
     $results[$record_id] = $record_info;
 }
@@ -339,12 +366,11 @@ foreach ($records as $record_id => $record) { // Record
 /*
  * Push all the results to Smarty templates for rendering
  */
-
 if (true) { // TODO this will be replaced with an 'enable debugging' setting
-    $debug["config"] = $config;
-//    $debug["metadata"] = $metadata;
-    $debug["records"] = $records;
-    $debug["results"] = $results;
+//    $debug["config"] = $config;
+    $debug["metadata"] = $metadata;
+//    $debug["records"] = $records;
+//    $debug["results"] = $results;
     if ((isset($debug) && !empty($debug))) {
         $module->setTemplateVariable("debug", print_r($debug, true));
     }
