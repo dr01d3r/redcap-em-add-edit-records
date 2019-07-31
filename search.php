@@ -27,13 +27,14 @@ $config = [
     "groups" => [],
     "search_fields" => [],
     "display_fields" => [],
+    "forms_and_fields" => [],
     "messages" => [],
     "errors" => []
 ];
 
 $metadata = [
-    "fields" => [],
     "forms" => [],
+    "fields" => [],
     "form_statuses" => [
         0 => "Incomplete",
         1 => "Unverified",
@@ -67,6 +68,9 @@ $recordCount = null;
  * This is necessary for knowing where to find record
  * values (i.e. repeating/non-repeating forms)
  *
+ * TODO possibly add a config setting to specify how records across arms should be considered
+ *   i.e. same person or not
+ * ---
  * TODO achieve arms context (and repeating events)
  *   https://datatables.net/examples/basic_init/complex_header.html
  *   $Proj->longitudinal
@@ -104,41 +108,47 @@ if (!empty(\REDCap::getUserRights(USERID)[USERID]["group_id"])) {
 foreach ($module->getSubSettings("search_fields") as $search_field) {
     if (empty($search_field["search_field_name"])) continue;
 
-    if ($Proj->isFormStatus($search_field["search_field_name"])) {
-        $config["search_fields"][$search_field["search_field_name"]] = [
+    $field_name = $search_field["search_field_name"];
+    $field_type = $Proj->metadata[$field_name]["element_type"];
+    $form_name = $Proj->metadata[$field_name]["form_name"];
+
+    $config["forms_and_fields"][$form_name][$field_name]["search"] = true;
+
+    if ($Proj->isFormStatus($field_name)) {
+        $config["search_fields"][$field_name] = [
             "wildcard" => false,
-            "value" => $Proj->forms[$Proj->metadata[$search_field["search_field_name"]]["form_name"]]["menu"] . " Status",
+            "value" => $Proj->forms[$form_name]["menu"] . " Status",
             "dictionary_values" => $metadata["form_statuses"]
         ];
     } else {
-        $config["search_fields"][$search_field["search_field_name"]] = [
-            "value" => $module->getDictionaryLabelFor($search_field["search_field_name"])
+        $config["search_fields"][$field_name] = [
+            "value" => $module->getDictionaryLabelFor($field_name)
         ];
         // override wildcard config in certain cases; otherwise, take what the user specified
-        switch ($Proj->metadata[$search_field["search_field_name"]]["element_type"]) {
+        switch ($field_type) {
             case "select":
             case "radio":
-                $config["search_fields"][$search_field["search_field_name"]]["wildcard"] = false;
+                $config["search_fields"][$field_name]["wildcard"] = false;
                 break;
             case "checkbox":
-                $config["search_fields"][$search_field["search_field_name"]]["wildcard"] = true;
+                $config["search_fields"][$field_name]["wildcard"] = true;
                 break;
             default:
-                $config["search_fields"][$search_field["search_field_name"]]["wildcard"] = $search_field["search_field_name_wildcard"];
+                $config["search_fields"][$field_name]["wildcard"] = $search_field["search_field_name_wildcard"];
                 break;
         }
         // set structured values for display in search options
-        switch ($Proj->metadata[$search_field["search_field_name"]]["element_type"]) {
+        switch ($field_type) {
             case "select":
             case "radio":
             case "checkbox":
-                $config["search_fields"][$search_field["search_field_name"]]["dictionary_values"] =
-                    $module->getDictionaryValuesFor($search_field["search_field_name"]);
+                $config["search_fields"][$field_name]["dictionary_values"] =
+                    $module->getDictionaryValuesFor($field_name);
                 break;
             case "yesno":
             case "truefalse":
-                $config["search_fields"][$search_field["search_field_name"]]["dictionary_values"] =
-                    $metadata["custom_dictionary_values"][$Proj->metadata[$search_field["search_field_name"]]["element_type"]];
+                $config["search_fields"][$field_name]["dictionary_values"] =
+                    $metadata["custom_dictionary_values"][$field_type];
                 break;
             default: break;
         }
@@ -148,16 +158,21 @@ foreach ($module->getSubSettings("search_fields") as $search_field) {
 foreach ($module->getSubSettings("display_fields") as $display_field) {
     if (empty($display_field["display_field_name"])) continue;
 
-    if ($Proj->isFormStatus($display_field["display_field_name"])) {
-        $config["display_fields"][$display_field["display_field_name"]] = [
+    $field_name = $display_field["display_field_name"];
+    $form_name = $Proj->metadata[$field_name]["form_name"];
+
+    $config["forms_and_fields"][$form_name][$field_name]["display"] = true;
+
+    if ($Proj->isFormStatus($field_name)) {
+        $config["display_fields"][$field_name] = [
             "is_form_status" => true,
             "date_format" => false,
-            "label" => $Proj->forms[$Proj->metadata[$display_field["display_field_name"]]["form_name"]]["menu"] . " Status"
+            "label" => $Proj->forms[$form_name]["menu"] . " Status"
         ];
     } else {
-        $config["display_fields"][$display_field["display_field_name"]] = [
-            "date_format" => $module->getDateFormatFromREDCapValidationType($display_field["display_field_name"]),
-            "label" => $module->getDictionaryLabelFor($display_field["display_field_name"]),
+        $config["display_fields"][$field_name] = [
+            "date_format" => $module->getDateFormatFromREDCapValidationType($field_name),
+            "label" => $module->getDictionaryLabelFor($field_name),
         ];
     }
 }
@@ -195,8 +210,6 @@ if (isset($_POST["search-field"]) && isset($_POST["search-value"])) {
 //            }
         }
     }
-    $debug["log"][] = "running search";
-    $debug["log"][] = $fieldValues;
 
     $recordIds = [];
     try {
@@ -227,12 +240,10 @@ if (empty($config["display_fields"])) {
  * Record Processing
  */
 foreach ($records as $record_id => $record) { // Record
-    // TODO do something for tracking the complete record info for rendering in a modal
     $record_info = [
         "arms" => [],
         "links" => [],
-        "display_dataset" => [],
-        "complete_dataset" => []
+        "data_full" => []
     ];
     // TODO new implementation of DAGs must be verified
     $redcap_data_access_group = null;
@@ -248,39 +259,66 @@ foreach ($records as $record_id => $record) { // Record
         $field_value = null;
 
         foreach ($metadata["forms"][$field_form_name] as $event_id => $event_info) {
+            $arm_num = $metadata["forms"][$field_form_name][$event_id]["arm_num"];
+            $arm = $metadata["forms"][$field_form_name][$event_id]["arm_name"];
+
             // set the form_values array with the data we want to look at
+            $repeat_key = null;
             switch ($event_info["repeating"]) {
-                case "event": // entire event, go to null key
-                    break;
                 case "form": // individual, go to form key
+                    $repeat_key = $field_form_name;
+                case "event": // entire event, go to null key
+                    foreach ($record["repeat_instances"][$event_id][$repeat_key] as $instance_key => $instance_info) {
+                        // TODO we dont want to just pull all the latest values, we need to keep context of the entire form
+                        //    maybe we can group display fields by form
+                        if (isset($instance_info[$field_name])) {
+                            $field_value = $instance_info[$field_name];
+                            $redcap_data_access_group = $instance_info["redcap_data_access_group"];
+
+                            if ($config["show_instance_badge"] === true) {
+                                $record_info[$field_name]["badge"] = $instance_key;
+                            }
+
+//                            $record_info["data_full"][$arm_num]["repeat_instances"][$event_id][$repeat_key][$instance_key]["link"] =
+//                                APP_PATH_WEBROOT . "DataEntry/index.php?" . http_build_query([
+//                                    "pid" => $module->getPID(),
+//                                    "id" => $record_id,
+//                                    "event_id" => $event_id,
+//                                    "page" => $field_form_name,
+//                                    "instance" => $instance_key,
+//                                    "arm" => $arm_num
+//                                ]);
+                            $record_info["data_full"][$arm_num]["repeat_instances"][$event_id][$repeat_key][$instance_key]["fields"][$field_name]["value"] = $field_value;
+                            $debug["log"][$record_id][$arm][] = "$event_id || $field_form_name ($instance_key) || $field_name || $field_value";
+                        }
+                    }
                     break;
                 default:  // non-repeating
-                    break;
+                    if (isset($record[$event_id][$field_name])) {
+                        $field_value = $record[$event_id][$field_name];
+                        $redcap_data_access_group = $record[$event_id]["redcap_data_access_group"];
 
-            }
-            if ($event_info["repeating"]) {
-                foreach ($record["repeat_instances"][$event_id][$field_form_name] as $instance_key => $instance_info) {
-                    if (isset($instance_info[$field_name])) {
-                        $record_info["arms"][$metadata["forms"][$field_form_name][$event_id]["arm_num"]] = $metadata["forms"][$field_form_name][$event_id]["arm_name"];
-                        $field_value = $instance_info[$field_name];
-                        $redcap_data_access_group = $instance_info["redcap_data_access_group"];
+//                        $record_info["data_full"][$arm_num][$event_id]["fields"][$field_name]["value"] =
+//                            APP_PATH_WEBROOT . "DataEntry/index.php?" . http_build_query([
+//                                "pid" => $module->getPID(),
+//                                "id" => $record_id,
+//                                "event_id" => $event_id,
+//                                "page" => $field_form_name,
+//                                "arm" => $arm_num
+//                            ]);
+                        $record_info["data_full"][$arm_num][$event_id]["fields"][$field_name]["value"] = $field_value;
 
-//                        $debug["log"][$record_id][] = "$event_id || $field_form_name ($instance_key) || $field_name || $field_value";
+                        $debug["log"][$record_id][$arm][] = "$event_id || $field_form_name || $field_name || $field_value";
                     }
-                }
-                if ($config["show_instance_badge"] === true) {
-                    $record_info[$field_name]["badge"] = key($record["repeat_instances"][$event_id][$field_form_name]);
-                }
-            } elseif (isset($record[$event_id][$field_name])) {
-                $record_info["arms"][$metadata["forms"][$field_form_name][$event_id]["arm_num"]] = $metadata["forms"][$field_form_name][$event_id]["arm_name"];
-                $field_value = $record[$event_id][$field_name];
-                $redcap_data_access_group = $record[$event_id]["redcap_data_access_group"];
+                    break;
+            }
 
-//                $debug["log"][$record_id][] = "$event_id || $field_form_name || $field_name || $field_value";
+            if ($field_value !== null) {
+                $record_info["arms"][$arm_num] = $arm;
             }
         }
 
-        // special handling for dag as well as structured data fields
+        // special handling for dag
         if ($config["include_dag"] === true && !isset($record_info["redcap_data_access_group"])) {
             $record_info["redcap_data_access_group"]["value"] = $config["groups"][$redcap_data_access_group];
         }
@@ -368,9 +406,9 @@ foreach ($records as $record_id => $record) { // Record
  */
 if (true) { // TODO this will be replaced with an 'enable debugging' setting
 //    $debug["config"] = $config;
-    $debug["metadata"] = $metadata;
+//    $debug["metadata"] = $metadata;
 //    $debug["records"] = $records;
-//    $debug["results"] = $results;
+    $debug["results"] = $results;
     if ((isset($debug) && !empty($debug))) {
         $module->setTemplateVariable("debug", print_r($debug, true));
     }

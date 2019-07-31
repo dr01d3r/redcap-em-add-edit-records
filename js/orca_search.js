@@ -1,6 +1,9 @@
 $(function() {
     if (OrcaSearch) {
-        $addEditLink = $("#west a:contains(" + OrcaSearch.addEditLinkText + ")");
+        let $addEditLink = $("#west a:contains(" + OrcaSearch.addEditLinkText[0] + ")");
+        if ($addEditLink.length === 0) {
+            $addEditLink = $("#west a:contains(" + OrcaSearch.addEditLinkText[1] + ")");
+        }
         switch (OrcaSearch.moduleLinkType) {
             case "add_edit_replace":
                 $addEditLink.attr("href", OrcaSearch.orcaSearchURL);

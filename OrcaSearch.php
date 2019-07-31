@@ -36,7 +36,7 @@ class OrcaSearch extends AbstractExternalModule {
             <script type='text/javascript'>
                 if(typeof OrcaSearch === 'undefined') {
                     var OrcaSearch = {
-                        addEditLinkText: "<?=$lang['bottom_62']?>",
+                        addEditLinkText: [ "<?=$lang['bottom_62']?>", "<?=$lang['bottom_72']?>" ],
                         orcaSearchURL: "<?=$this->getUrl('search.php')?>",
                         moduleLinkType: "add_edit_replace"
                     };
